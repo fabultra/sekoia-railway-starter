@@ -1,0 +1,73 @@
+name: Bootstrap Railway (one-time)
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_name:
+        description: 'Nom du projet Railway a creer'
+        required: true
+        default: 'my-new-project'
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    name: Provision Railway project and deploy
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      GH_REPO_OWNER: ${{ github.repository_owner }}
+      PROJECT_NAME: ${{ inputs.project_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Bootstrap Railway via GraphQL
+        id: bootstrap
+        continue-on-error: true
+        run: |
+          set +e
+          python3 .github/scripts/railway_bootstrap.py 2>&1 | tee /tmp/bootstrap.log
+          echo "EXIT_CODE=$?" >> $GITHUB_OUTPUT
+
+      - name: Commit logs and URL for visibility
+        if: always()
+        run: |
+          mkdir -p .ci-logs
+          cp /tmp/bootstrap.log .ci-logs/last-bootstrap.log 2>/dev/null || echo "No log" > .ci-logs/last-bootstrap.log
+          if [ -f /tmp/klide_url.txt ]; then cp /tmp/klide_url.txt .ci-logs/last-url.txt; fi
+          echo "Run: $GITHUB_RUN_ID at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > .ci-logs/last-run.txt
+          echo "Project: ${{ inputs.project_name }}" >> .ci-logs/last-run.txt
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions Bot"
+          git add .ci-logs
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "ci(bootstrap-railway): run $GITHUB_RUN_ID [skip ci]"
+            git push
+          fi
+
+      - name: Output deployed URL
+        if: success() && steps.bootstrap.outputs.EXIT_CODE == '0'
+        run: |
+          if [ -f /tmp/klide_url.txt ]; then
+            URL=$(cat /tmp/klide_url.txt)
+            echo "::notice title=Deployed::URL = $URL"
+            echo "## Deployed" >> $GITHUB_STEP_SUMMARY
+            echo "URL: $URL" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Fail if bootstrap failed
+        if: steps.bootstrap.outputs.EXIT_CODE != '0'
+        run: exit 1

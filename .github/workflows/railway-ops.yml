@@ -1,0 +1,96 @@
+name: Railway operations
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action a executer'
+        required: true
+        default: 'list-projects'
+        type: choice
+        options:
+          - list-projects
+          - delete-project
+          - list-services
+          - deploy-logs
+          - redeploy
+          - full-diagnostic
+          - add-service
+      project_id:
+        description: 'PROJECT_ID (pour delete-project, list-services, add-service)'
+        required: false
+        default: ''
+      service_id:
+        description: 'SERVICE_ID (pour deploy-logs, redeploy)'
+        required: false
+        default: ''
+      environment_id:
+        description: 'ENVIRONMENT_ID (pour deploy-logs, redeploy)'
+        required: false
+        default: ''
+      service_name:
+        description: 'SERVICE_NAME (pour add-service)'
+        required: false
+        default: ''
+      service_image:
+        description: 'SERVICE_IMAGE (pour add-service, ex: redis:7-alpine)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  ops:
+    name: Railway ops (${{ inputs.action }})
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      ACTION: ${{ inputs.action }}
+      PROJECT_ID: ${{ inputs.project_id }}
+      SERVICE_ID: ${{ inputs.service_id }}
+      ENVIRONMENT_ID: ${{ inputs.environment_id }}
+      SERVICE_NAME: ${{ inputs.service_name }}
+      SERVICE_IMAGE: ${{ inputs.service_image }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run operation
+        id: op
+        continue-on-error: true
+        run: |
+          set +e
+          python3 .github/scripts/railway_ops.py 2>&1 | tee /tmp/ops.log
+          echo "EXIT_CODE=$?" >> $GITHUB_OUTPUT
+
+      - name: Commit output
+        if: always()
+        run: |
+          mkdir -p .ci-logs
+          cp /tmp/ops.log .ci-logs/last-ops.log 2>/dev/null || echo "no log" > .ci-logs/last-ops.log
+          if [ -f /tmp/railway-ops-output.txt ]; then
+            cp /tmp/railway-ops-output.txt .ci-logs/last-ops-output.txt
+          fi
+          echo "Run: $GITHUB_RUN_ID action=${{ inputs.action }} at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > .ci-logs/last-ops-meta.txt
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions Bot"
+          git add .ci-logs
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "ci(railway-ops): ${{ inputs.action }} run $GITHUB_RUN_ID [skip ci]"
+            git push
+          fi
+
+      - name: Fail if op failed
+        if: steps.op.outputs.EXIT_CODE != '0'
+        run: exit 1
